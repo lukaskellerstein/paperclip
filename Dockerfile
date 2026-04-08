@@ -2,7 +2,7 @@ FROM node:lts-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu curl git wget ripgrep python3 \
+  && apt-get install -y --no-install-recommends ca-certificates gosu curl git wget ripgrep python3 python3-venv \
   && mkdir -p -m 755 /etc/apt/keyrings \
   && wget -nv -O/etc/apt/keyrings/githubcli-archive-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && echo "20e0125d6f6e077a9ad46f03371bc26d90b04939fb95170f5a1905099cc6bcc0  /etc/apt/keyrings/githubcli-archive-keyring.gpg" | sha256sum -c - \
@@ -54,7 +54,19 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @googleworkspace/cli \
+  && curl -LsSf https://astral.sh/uv/install.sh | env INSTALLER_NO_MODIFY_PATH=1 sh \
+  && mv /root/.local/bin/uv /usr/local/bin/uv \
+  && mv /root/.local/bin/uvx /usr/local/bin/uvx \
+  # Docker CLI (uses host Docker daemon via mounted socket)
+  && curl -fsSL https://download.docker.com/linux/static/stable/$(uname -m)/docker-27.5.1.tgz \
+     | tar xz --strip-components=1 -C /usr/local/bin docker/docker \
+  # kubectl
+  && curl -fsSL -o /usr/local/bin/kubectl \
+     "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/$(dpkg --print-architecture)/kubectl" \
+  && chmod +x /usr/local/bin/kubectl \
+  # Helm
+  && curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 

@@ -4,6 +4,8 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
+import { projectGoals } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityCollisionStrategy,
@@ -24,6 +26,8 @@ import type {
   CompanyPortabilityIssueRoutineManifestEntry,
   CompanyPortabilityIssueRoutineTriggerManifestEntry,
   CompanyPortabilityIssueManifestEntry,
+  CompanyPortabilityGoalManifestEntry,
+  CompanyPortabilityPreviewGoalPlan,
   CompanyPortabilitySidebarOrder,
   CompanyPortabilitySkillManifestEntry,
   CompanySkill,
@@ -47,6 +51,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
+import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
@@ -58,7 +63,8 @@ import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
 import { validateCron } from "./cron.js";
 import { issueService } from "./issues.js";
-import { projectService } from "./projects.js";
+import { projectService, syncGoalLinks } from "./projects.js";
+import { goalService } from "./goals.js";
 import { routineService } from "./routines.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
@@ -112,6 +118,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
   projects: false,
   issues: false,
   skills: false,
+  goals: true,
 };
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
@@ -130,6 +137,7 @@ function resolveSkillConflictStrategy(mode: ImportMode, collisionStrategy: Compa
 function classifyPortableFileKind(pathValue: string): CompanyPortabilityExportPreviewResult["fileInventory"][number]["kind"] {
   const normalized = normalizePortablePath(pathValue);
   if (normalized === "COMPANY.md") return "company";
+  if (normalized === "GOALS.md") return "goal";
   if (normalized === ".paperclip.yaml" || normalized === ".paperclip.yml") return "extension";
   if (normalized === "README.md") return "readme";
   if (normalized.startsWith("agents/")) return "agent";
@@ -1218,6 +1226,7 @@ function normalizeInclude(input?: Partial<CompanyPortabilityInclude>): CompanyPo
     projects: input?.projects ?? DEFAULT_INCLUDE.projects,
     issues: input?.issues ?? DEFAULT_INCLUDE.issues,
     skills: input?.skills ?? DEFAULT_INCLUDE.skills,
+    goals: input?.goals ?? DEFAULT_INCLUDE.goals,
   };
 }
 
@@ -1876,6 +1885,7 @@ function applySelectedFilesToSource(source: ResolvedSource, selectedFiles?: stri
     projects: filtered.manifest.projects.length > 0,
     issues: filtered.manifest.issues.length > 0,
     skills: filtered.manifest.skills.length > 0,
+    goals: filtered.manifest.goals.length > 0,
   };
 
   return filtered;
@@ -2202,6 +2212,64 @@ function readCompanyApprovalDefault(_frontmatter: Record<string, unknown>) {
   return true;
 }
 
+function readGoalStrings(frontmatter: Record<string, unknown>): string[] {
+  const raw = frontmatter.goals;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((entry) => (typeof entry === "string" ? entry.trim() : null))
+    .filter((entry): entry is string => Boolean(entry));
+}
+
+const DEFAULT_GOAL_LEVELS_BY_DEPTH = ["company", "team", "agent", "task"] as const;
+
+interface GoalFrontmatterEntry {
+  slug?: unknown;
+  title?: unknown;
+  description?: unknown;
+  level?: unknown;
+  status?: unknown;
+  ownerAgentSlug?: unknown;
+  projectSlugs?: unknown;
+  subgoals?: unknown;
+}
+
+function flattenGoalTree(
+  entries: unknown[],
+  parentSlug: string | null,
+  depth: number,
+): CompanyPortabilityGoalManifestEntry[] {
+  const result: CompanyPortabilityGoalManifestEntry[] = [];
+  for (const raw of entries) {
+    if (!isPlainRecord(raw)) continue;
+    const entry = raw as GoalFrontmatterEntry;
+    const slug = asString(entry.slug);
+    const title = asString(entry.title);
+    if (!slug || !title) continue;
+
+    const level = asString(entry.level)
+      ?? DEFAULT_GOAL_LEVELS_BY_DEPTH[Math.min(depth, DEFAULT_GOAL_LEVELS_BY_DEPTH.length - 1)];
+    const status = asString(entry.status) ?? "active";
+    const description = asString(entry.description) ?? null;
+    const ownerAgentSlug = asString(entry.ownerAgentSlug) ?? null;
+    const projectSlugs = Array.isArray(entry.projectSlugs)
+      ? entry.projectSlugs.filter((s): s is string => typeof s === "string")
+      : [];
+
+    result.push({ slug, title, description, level, status, ownerAgentSlug, parentSlug, projectSlugs });
+
+    if (Array.isArray(entry.subgoals) && entry.subgoals.length > 0) {
+      result.push(...flattenGoalTree(entry.subgoals, slug, depth + 1));
+    }
+  }
+  return result;
+}
+
+function readGoalsManifest(frontmatter: Record<string, unknown>): CompanyPortabilityGoalManifestEntry[] {
+  const raw = frontmatter.goals;
+  if (!Array.isArray(raw)) return [];
+  return flattenGoalTree(raw, null, 0);
+}
+
 function readIncludeEntries(frontmatter: Record<string, unknown>): CompanyPackageIncludeEntry[] {
   const includes = frontmatter.includes;
   if (!Array.isArray(includes)) return [];
@@ -2316,6 +2384,9 @@ function buildManifestFromPackageFiles(
   const discoveredSkillPaths = Object.keys(normalizedFiles).filter(
     (entry) => entry.endsWith("/SKILL.md") || entry === "SKILL.md",
   );
+  const discoveredGoalsPaths = Object.keys(normalizedFiles).filter(
+    (entry) => entry.endsWith("/GOALS.md") || entry === "GOALS.md",
+  );
   const agentPaths = Array.from(new Set([...referencedAgentPaths, ...discoveredAgentPaths])).sort();
   const projectPaths = Array.from(new Set([...referencedProjectPaths, ...discoveredProjectPaths])).sort();
   const taskPaths = Array.from(new Set([...referencedTaskPaths, ...discoveredTaskPaths])).sort();
@@ -2331,11 +2402,13 @@ function buildManifestFromPackageFiles(
       projects: projectPaths.length > 0,
       issues: taskPaths.length > 0,
       skills: skillPaths.length > 0,
+      goals: discoveredGoalsPaths.length > 0,
     },
     company: {
       path: resolvedCompanyPath,
       name: companyName,
       description: asString(companyFrontmatter.description),
+      goals: readGoalStrings(companyFrontmatter),
       brandColor: asString(paperclipCompany.brandColor),
       logoPath: asString(paperclipCompany.logoPath) ?? asString(paperclipCompany.logo),
       requireBoardApprovalForNewAgents:
@@ -2360,6 +2433,7 @@ function buildManifestFromPackageFiles(
     skills: [],
     projects: [],
     issues: [],
+    goals: [],
     envInputs: [],
   };
 
@@ -2596,6 +2670,27 @@ function buildManifestFromPackageFiles(
     }
   }
 
+  for (const goalsPath of discoveredGoalsPaths) {
+    const markdownRaw = readPortableTextFile(normalizedFiles, goalsPath);
+    if (typeof markdownRaw !== "string") {
+      warnings.push(`Referenced goals file is missing from package: ${goalsPath}`);
+      continue;
+    }
+    const goalsDoc = parseFrontmatterMarkdown(markdownRaw);
+    let goalEntries = readGoalsManifest(goalsDoc.frontmatter);
+    // If goals not in frontmatter, try parsing the body as YAML
+    if (goalEntries.length === 0 && goalsDoc.body.trim()) {
+      const bodyParsed = parseYamlFrontmatter(goalsDoc.body);
+      goalEntries = readGoalsManifest(bodyParsed);
+    }
+    manifest.goals.push(...goalEntries);
+  }
+
+  if (manifest.goals.length > 0 && manifest.company && manifest.company.goals.length > 0) {
+    warnings.push("GOALS.md found — ignoring goals from COMPANY.md frontmatter in favor of GOALS.md.");
+    manifest.company.goals = [];
+  }
+
   manifest.envInputs = dedupeEnvInputs(manifest.envInputs);
   return {
     manifest,
@@ -2725,6 +2820,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         return (
           relative.endsWith(".md") ||
           relative.startsWith("skills/") ||
+          /^agents\/[^/]+\/runtime\//.test(relative) ||
           relative === ".paperclip.yaml" ||
           relative === ".paperclip.yml"
         );
@@ -2839,6 +2935,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       idToSlug.set(agent.id, slug);
     }
 
+    const goalsSvc = goalService(db);
     const projectsSvc = projectService(db);
     const issuesSvc = issueService(db);
     const routinesSvc = routineService(db);
@@ -2976,16 +3073,97 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         .filter((slug): slug is string => Boolean(slug)),
     });
 
+    const companyGoalRows = include.company ? await goalsSvc.list(companyId) : [];
+    const companyGoalTitles = companyGoalRows
+      .filter((g) => g.level === "company" && !g.parentId)
+      .map((g) => g.title);
+
     const companyPath = "COMPANY.md";
-    files[companyPath] = buildMarkdown(
-      {
-        name: company.name,
-        description: company.description ?? null,
-        schema: "agentcompanies/v1",
-        slug: rootPath,
-      },
-      "",
-    );
+    const companyFrontmatterOut: Record<string, unknown> = {
+      name: company.name,
+      description: company.description ?? null,
+      schema: "agentcompanies/v1",
+      slug: rootPath,
+    };
+    if (companyGoalTitles.length > 0) {
+      companyFrontmatterOut.goals = companyGoalTitles;
+    }
+    files[companyPath] = buildMarkdown(companyFrontmatterOut, "");
+
+    if (include.goals !== false && companyGoalRows.length > 0) {
+      const goalProjectLinks = await db.select().from(projectGoals).where(eq(projectGoals.companyId, companyId));
+      const goalIdToProjectSlugs = new Map<string, string[]>();
+      for (const link of goalProjectLinks) {
+        const projSlug = projectSlugById.get(link.projectId);
+        if (!projSlug) continue;
+        const existing = goalIdToProjectSlugs.get(link.goalId) ?? [];
+        existing.push(projSlug);
+        goalIdToProjectSlugs.set(link.goalId, existing);
+      }
+
+      type GoalTreeNode = {
+        slug: string;
+        title: string;
+        description: string | null;
+        level: string;
+        status: string;
+        ownerAgentSlug: string | null;
+        projectSlugs: string[];
+        subgoals: GoalTreeNode[];
+      };
+
+      const goalSlugById = new Map<string, string>();
+      const usedGoalSlugs = new Set<string>();
+      for (const goal of companyGoalRows) {
+        const baseSlug = normalizeAgentUrlKey(goal.title) ?? "goal";
+        goalSlugById.set(goal.id, uniqueSlug(baseSlug, usedGoalSlugs));
+      }
+
+      const nodeById = new Map<string, GoalTreeNode>();
+      for (const goal of companyGoalRows) {
+        const slug = goalSlugById.get(goal.id)!;
+        nodeById.set(goal.id, {
+          slug,
+          title: goal.title,
+          description: goal.description ?? null,
+          level: goal.level,
+          status: goal.status,
+          ownerAgentSlug: goal.ownerAgentId ? (idToSlug.get(goal.ownerAgentId) ?? null) : null,
+          projectSlugs: goalIdToProjectSlugs.get(goal.id) ?? [],
+          subgoals: [],
+        });
+      }
+
+      const rootNodes: GoalTreeNode[] = [];
+      for (const goal of companyGoalRows) {
+        const node = nodeById.get(goal.id)!;
+        if (goal.parentId && nodeById.has(goal.parentId)) {
+          nodeById.get(goal.parentId)!.subgoals.push(node);
+        } else {
+          rootNodes.push(node);
+        }
+      }
+
+      function goalNodeToFrontmatter(node: GoalTreeNode): Record<string, unknown> {
+        const entry: Record<string, unknown> = {
+          slug: node.slug,
+          title: node.title,
+        };
+        if (node.description) entry.description = node.description;
+        entry.level = node.level;
+        entry.status = node.status;
+        if (node.ownerAgentSlug) entry.ownerAgentSlug = node.ownerAgentSlug;
+        if (node.projectSlugs.length > 0) entry.projectSlugs = node.projectSlugs;
+        if (node.subgoals.length > 0) {
+          entry.subgoals = node.subgoals.map(goalNodeToFrontmatter);
+        }
+        return entry;
+      }
+
+      if (rootNodes.length > 0) {
+        files["GOALS.md"] = buildMarkdown({ goals: rootNodes.map(goalNodeToFrontmatter) }, "");
+      }
+    }
 
     if (include.company && company.logoAssetId) {
       if (!storage) {
@@ -3300,6 +3478,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       projects: resolved.manifest.projects.length > 0,
       issues: resolved.manifest.issues.length > 0,
       skills: resolved.manifest.skills.length > 0,
+      goals: resolved.manifest.goals.length > 0,
     };
     resolved.manifest.envInputs = dedupeEnvInputs(envInputs);
     resolved.warnings.unshift(...warnings);
@@ -3334,6 +3513,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       projects: resolved.manifest.projects.length > 0,
       issues: resolved.manifest.issues.length > 0,
       skills: resolved.manifest.skills.length > 0,
+      goals: resolved.manifest.goals.length > 0,
     };
     resolved.manifest.envInputs = dedupeEnvInputs(envInputs);
     resolved.warnings.unshift(...warnings);
@@ -3379,6 +3559,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         skills: exported.manifest.skills.length,
         projects: exported.manifest.projects.length,
         issues: exported.manifest.issues.length,
+        goals: exported.manifest.goals.length,
       },
     };
   }
@@ -3397,6 +3578,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       projects: requestedInclude.projects && manifest.projects.length > 0,
       issues: requestedInclude.issues && manifest.issues.length > 0,
       skills: requestedInclude.skills && manifest.skills.length > 0,
+      goals: requestedInclude.goals && manifest.goals.length > 0,
     };
     const collisionStrategy = input.collisionStrategy ?? DEFAULT_COLLISION_STRATEGY;
     if (mode === "agent_safe" && collisionStrategy === "replace") {
@@ -3525,6 +3707,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const existingSlugs = new Set<string>();
     const projectPlans: CompanyPortabilityPreviewResult["plan"]["projectPlans"] = [];
     const issuePlans: CompanyPortabilityPreviewResult["plan"]["issuePlans"] = [];
+    const goalPlans: CompanyPortabilityPreviewGoalPlan[] = [];
     const existingProjectSlugToProject = new Map<string, { id: string; name: string }>();
     const existingProjectSlugs = new Set<string>();
 
@@ -3696,6 +3879,17 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
     }
 
+    if (include.goals) {
+      for (const manifestGoal of manifest.goals) {
+        goalPlans.push({
+          slug: manifestGoal.slug,
+          action: "create",
+          plannedTitle: manifestGoal.title,
+          reason: null,
+        });
+      }
+    }
+
     const preview: CompanyPortabilityPreviewResult = {
       include,
       targetCompanyId,
@@ -3711,6 +3905,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         agentPlans,
         projectPlans,
         issuePlans,
+        goalPlans,
       },
       manifest,
       files: source.files,
@@ -3878,6 +4073,78 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
     }
 
+    // Import goals — prefer GOALS.md (rich hierarchy) over COMPANY.md (flat strings)
+    const goalsDb = goalService(db);
+    const goalSlugToId = new Map<string, string>();
+    const resultGoals: CompanyPortabilityImportResult["goals"] = [];
+
+    if (include.goals && sourceManifest.goals.length > 0) {
+      // Rich goal import from GOALS.md — phase 1: create goals with hierarchy
+      // Goals are already in topological order (parents before children from flattenGoalTree)
+      for (const planGoal of plan.preview.plan.goalPlans) {
+        const manifestGoal = sourceManifest.goals.find((g) => g.slug === planGoal.slug);
+        if (!manifestGoal) continue;
+        if (planGoal.action === "skip") {
+          resultGoals.push({
+            slug: planGoal.slug,
+            id: null,
+            action: "skipped",
+            title: planGoal.plannedTitle,
+            reason: planGoal.reason,
+          });
+          continue;
+        }
+        const parentId = manifestGoal.parentSlug
+          ? goalSlugToId.get(manifestGoal.parentSlug) ?? null
+          : null;
+        try {
+          const created = await goalsDb.create(targetCompany.id, {
+            title: manifestGoal.title,
+            description: manifestGoal.description,
+            level: manifestGoal.level,
+            status: manifestGoal.status,
+            parentId,
+          });
+          if (created) {
+            goalSlugToId.set(manifestGoal.slug, created.id);
+            resultGoals.push({
+              slug: manifestGoal.slug,
+              id: created.id,
+              action: "created",
+              title: created.title,
+              reason: null,
+            });
+          }
+        } catch (err) {
+          warnings.push(`Failed to create goal "${manifestGoal.title}": ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    } else if (include.company) {
+      // Fallback: import flat goal strings from COMPANY.md
+      const goalStrings = sourceManifest.company?.goals ?? [];
+      for (const goalTitle of goalStrings) {
+        try {
+          const created = await goalsDb.create(targetCompany.id, {
+            title: goalTitle,
+            level: "company",
+            status: "active",
+          });
+          if (created) {
+            goalSlugToId.set(normalizeAgentUrlKey(goalTitle) ?? goalTitle, created.id);
+            resultGoals.push({
+              slug: normalizeAgentUrlKey(goalTitle) ?? goalTitle,
+              id: created.id,
+              action: "created",
+              title: created.title,
+              reason: null,
+            });
+          }
+        } catch (err) {
+          warnings.push(`Failed to create goal "${goalTitle}": ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+
     const resultAgents: CompanyPortabilityImportResult["agents"] = [];
     const resultProjects: CompanyPortabilityImportResult["projects"] = [];
     const importedSlugToAgentId = new Map<string, string>();
@@ -3908,6 +4175,32 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       } else if (importedSkill.originalKey !== importedSkill.skill.key) {
         warnings.push(`Imported skill ${importedSkill.originalSlug} as ${importedSkill.skill.slug} to avoid overwriting an existing skill.`);
       }
+    }
+
+    async function deployAgentRuntimeFiles(
+      agentId: string,
+      bundleFiles: Record<string, string>,
+    ): Promise<string[]> {
+      const deployed: string[] = [];
+      const workspaceDir = resolveDefaultAgentWorkspaceDir(agentId);
+      for (const [relativePath, content] of Object.entries(bundleFiles)) {
+        if (!relativePath.startsWith("runtime/")) continue;
+        const stripped = relativePath.slice("runtime/".length);
+        let targetPath: string;
+        if (stripped === "mcp.json") {
+          targetPath = path.join(workspaceDir, ".mcp.json");
+        } else if (stripped === "settings.json") {
+          targetPath = path.join(workspaceDir, ".claude", "settings.json");
+        } else if (stripped.startsWith("agents/") && stripped.endsWith(".md")) {
+          targetPath = path.join(workspaceDir, ".claude", "agents", stripped.slice("agents/".length));
+        } else {
+          continue;
+        }
+        await fs.mkdir(path.dirname(targetPath), { recursive: true });
+        await fs.writeFile(targetPath, content, "utf8");
+        deployed.push(stripped);
+      }
+      return deployed;
     }
 
     if (include.agents) {
@@ -4007,6 +4300,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
+          try {
+            await deployAgentRuntimeFiles(updated.id, bundleFiles);
+          } catch (err) {
+            warnings.push(`Failed to deploy runtime files for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
+          }
           importedSlugToAgentId.set(planAgent.slug, updated.id);
           existingSlugToAgentId.set(normalizeAgentUrlKey(updated.name) ?? updated.id, updated.id);
           resultAgents.push({
@@ -4037,6 +4335,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
         } catch (err) {
           warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        try {
+          await deployAgentRuntimeFiles(created.id, bundleFiles);
+        } catch (err) {
+          warnings.push(`Failed to deploy runtime files for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
         }
         importedSlugToAgentId.set(planAgent.slug, created.id);
         existingSlugToAgentId.set(normalizeAgentUrlKey(created.name) ?? created.id, created.id);
@@ -4173,6 +4476,52 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
     }
 
+    // Goals phase 2: resolve ownerAgentSlug → ownerAgentId (agents now imported)
+    if (include.goals && sourceManifest.goals.length > 0) {
+      for (const manifestGoal of sourceManifest.goals) {
+        if (!manifestGoal.ownerAgentSlug) continue;
+        const goalId = goalSlugToId.get(manifestGoal.slug);
+        const agentId = importedSlugToAgentId.get(manifestGoal.ownerAgentSlug)
+          ?? existingSlugToAgentId.get(manifestGoal.ownerAgentSlug)
+          ?? null;
+        if (goalId && agentId) {
+          try {
+            await goalsDb.update(goalId, { ownerAgentId: agentId });
+          } catch (err) {
+            warnings.push(`Failed to set owner for goal "${manifestGoal.title}": ${err instanceof Error ? err.message : String(err)}`);
+          }
+        } else if (goalId && manifestGoal.ownerAgentSlug) {
+          warnings.push(`Goal "${manifestGoal.title}" references unknown agent "${manifestGoal.ownerAgentSlug}" as owner.`);
+        }
+      }
+
+      // Goals phase 3: link goals to projects (projects now imported)
+      const projectSlugToGoalIds = new Map<string, string[]>();
+      for (const manifestGoal of sourceManifest.goals) {
+        for (const projSlug of manifestGoal.projectSlugs) {
+          const goalId = goalSlugToId.get(manifestGoal.slug);
+          if (!goalId) continue;
+          const existing = projectSlugToGoalIds.get(projSlug) ?? [];
+          existing.push(goalId);
+          projectSlugToGoalIds.set(projSlug, existing);
+        }
+      }
+      for (const [projSlug, goalIds] of projectSlugToGoalIds) {
+        const projectId = importedSlugToProjectId.get(projSlug)
+          ?? existingProjectSlugToId.get(projSlug)
+          ?? null;
+        if (projectId) {
+          try {
+            await syncGoalLinks(db, projectId, targetCompany.id, goalIds);
+          } catch (err) {
+            warnings.push(`Failed to link goals to project "${projSlug}": ${err instanceof Error ? err.message : String(err)}`);
+          }
+        } else {
+          warnings.push(`Goals reference unknown project "${projSlug}" for linking.`);
+        }
+      }
+    }
+
     if (include.issues) {
       const routines = routineService(db);
       for (const manifestIssue of sourceManifest.issues) {
@@ -4305,6 +4654,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       },
       agents: resultAgents,
       projects: resultProjects,
+      goals: resultGoals,
       envInputs: sourceManifest.envInputs ?? [],
       warnings,
     };

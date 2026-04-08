@@ -8,6 +8,7 @@ export const portabilityIncludeSchema = z
     projects: z.boolean().optional(),
     issues: z.boolean().optional(),
     skills: z.boolean().optional(),
+    goals: z.boolean().optional(),
   })
   .partial();
 
@@ -149,6 +150,17 @@ export const portabilityIssueManifestEntrySchema = z.object({
   metadata: z.record(z.unknown()).nullable(),
 });
 
+export const portabilityGoalManifestEntrySchema = z.object({
+  slug: z.string().min(1),
+  title: z.string().min(1),
+  description: z.string().nullable(),
+  level: z.string().min(1),
+  status: z.string().min(1),
+  ownerAgentSlug: z.string().min(1).nullable(),
+  parentSlug: z.string().min(1).nullable(),
+  projectSlugs: z.array(z.string().min(1)).default([]),
+});
+
 export const portabilityManifestSchema = z.object({
   schemaVersion: z.number().int().positive(),
   generatedAt: z.string().datetime(),
@@ -164,6 +176,7 @@ export const portabilityManifestSchema = z.object({
     projects: z.boolean(),
     issues: z.boolean(),
     skills: z.boolean(),
+    goals: z.boolean().default(false),
   }),
   company: portabilityCompanyManifestEntrySchema.nullable(),
   sidebar: portabilitySidebarOrderSchema.nullable(),
@@ -171,6 +184,7 @@ export const portabilityManifestSchema = z.object({
   skills: z.array(portabilitySkillManifestEntrySchema).default([]),
   projects: z.array(portabilityProjectManifestEntrySchema).default([]),
   issues: z.array(portabilityIssueManifestEntrySchema).default([]),
+  goals: z.array(portabilityGoalManifestEntrySchema).default([]),
   envInputs: z.array(portabilityEnvInputSchema).default([]),
 });
 

@@ -119,6 +119,7 @@ describe("renderCompanyImportPreview", () => {
         projects: true,
         issues: true,
         skills: true,
+        goals: false,
       },
       targetCompanyId: "company-123",
       targetCompanyName: "Imported Co",
@@ -141,6 +142,7 @@ describe("renderCompanyImportPreview", () => {
         issuePlans: [
           { slug: "kickoff", action: "create", plannedTitle: "Kickoff", reason: null },
         ],
+        goalPlans: [],
       },
       manifest: {
         schemaVersion: 1,
@@ -155,11 +157,13 @@ describe("renderCompanyImportPreview", () => {
           projects: true,
           issues: true,
           skills: true,
+          goals: false,
         },
         company: {
           path: "COMPANY.md",
           name: "Source Co",
           description: null,
+          goals: [],
           brandColor: null,
           logoPath: null,
           requireBoardApprovalForNewAgents: false,
@@ -245,6 +249,7 @@ describe("renderCompanyImportPreview", () => {
             metadata: null,
           },
         ],
+        goals: [],
         envInputs: [
           {
             key: "OPENAI_API_KEY",
@@ -313,6 +318,7 @@ describe("renderCompanyImportResult", () => {
           { slug: "ops", id: "project-2", action: "updated", name: "Operations", reason: "replace strategy" },
           { slug: "archive", id: null, action: "skipped", name: "Archive", reason: "skip strategy" },
         ],
+        goals: [],
         envInputs: [],
         warnings: ["Review API keys"],
       },
@@ -343,6 +349,7 @@ describe("import selection catalog", () => {
         projects: true,
         issues: true,
         skills: true,
+        goals: false,
       },
       targetCompanyId: "company-123",
       targetCompanyName: "Imported Co",
@@ -353,6 +360,7 @@ describe("import selection catalog", () => {
         agentPlans: [],
         projectPlans: [],
         issuePlans: [],
+        goalPlans: [],
       },
       manifest: {
         schemaVersion: 1,
@@ -367,11 +375,13 @@ describe("import selection catalog", () => {
           projects: true,
           issues: true,
           skills: true,
+          goals: false,
         },
         company: {
           path: "COMPANY.md",
           name: "Source Co",
           description: null,
+          goals: [],
           brandColor: null,
           logoPath: "images/company-logo.png",
           requireBoardApprovalForNewAgents: false,
@@ -457,6 +467,7 @@ describe("import selection catalog", () => {
             metadata: null,
           },
         ],
+        goals: [],
         envInputs: [],
       },
       files: {
@@ -525,6 +536,7 @@ describe("default adapter overrides", () => {
         agentPlans: [],
         projectPlans: [],
         issuePlans: [],
+        goalPlans: [],
       },
       manifest: {
         schemaVersion: 1,
@@ -536,6 +548,7 @@ describe("default adapter overrides", () => {
           projects: false,
           issues: false,
           skills: false,
+          goals: false,
         },
         company: null,
         sidebar: null,
@@ -578,6 +591,7 @@ describe("default adapter overrides", () => {
         skills: [],
         projects: [],
         issues: [],
+        goals: [],
         envInputs: [],
       },
       files: {},

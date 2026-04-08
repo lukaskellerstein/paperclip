@@ -84,6 +84,7 @@ const DEFAULT_EXPORT_INCLUDE: CompanyPortabilityInclude = {
   projects: false,
   issues: false,
   skills: false,
+  goals: true,
 };
 
 const DEFAULT_IMPORT_INCLUDE: CompanyPortabilityInclude = {
@@ -92,6 +93,7 @@ const DEFAULT_IMPORT_INCLUDE: CompanyPortabilityInclude = {
   projects: true,
   issues: true,
   skills: true,
+  goals: true,
 };
 
 const IMPORT_INCLUDE_OPTIONS: Array<{
@@ -104,6 +106,7 @@ const IMPORT_INCLUDE_OPTIONS: Array<{
   { value: "issues", label: "Tasks", hint: "tasks and recurring routines" },
   { value: "agents", label: "Agents", hint: "agent records and org structure" },
   { value: "skills", label: "Skills", hint: "company skill packages and references" },
+  { value: "goals", label: "Goals", hint: "goal hierarchy with ownership and project linkage" },
 ];
 
 const IMPORT_PREVIEW_SAMPLE_LIMIT = 6;

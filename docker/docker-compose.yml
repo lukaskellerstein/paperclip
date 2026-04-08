@@ -29,8 +29,18 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      KUBECONFIG: /paperclip/.kube/config
+      DOCKER_HOST: unix:///var/run/docker.sock
+      DOCKER_CONFIG: /paperclip/.docker
     volumes:
       - paperclip-data:/paperclip
+      # Host Docker socket -- lets agents run docker build/push
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Host kubeconfig -- lets agents run kubectl
+      - ${HOME}/.kube/config:/paperclip/.kube/config:ro
+      # Company config (.company/ in repo root)
+      - ../.company/gws:/paperclip/.gws:ro
+      - ../.company/claude:/docker-init/claude:ro
     depends_on:
       db:
         condition: service_healthy

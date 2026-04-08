@@ -71,6 +71,7 @@ export {
   portabilitySidebarOrderSchema,
   portabilityAgentManifestEntrySchema,
   portabilitySkillManifestEntrySchema,
+  portabilityGoalManifestEntrySchema,
   portabilityManifestSchema,
   portabilitySourceSchema,
   portabilityTargetSchema,

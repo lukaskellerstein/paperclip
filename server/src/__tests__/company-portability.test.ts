@@ -47,6 +47,12 @@ const routineSvc = {
   createTrigger: vi.fn(),
 };
 
+const goalSvc = {
+  list: vi.fn(),
+  create: vi.fn(),
+  update: vi.fn(),
+};
+
 const companySkillSvc = {
   list: vi.fn(),
   listFull: vi.fn(),
@@ -76,8 +82,10 @@ vi.mock("../services/access.js", () => ({
   accessService: () => accessSvc,
 }));
 
+const syncGoalLinksMock = vi.fn();
 vi.mock("../services/projects.js", () => ({
   projectService: () => projectSvc,
+  syncGoalLinks: (...args: unknown[]) => syncGoalLinksMock(...args),
 }));
 
 vi.mock("../services/issues.js", () => ({
@@ -86,6 +94,10 @@ vi.mock("../services/issues.js", () => ({
 
 vi.mock("../services/routines.js", () => ({
   routineService: () => routineSvc,
+}));
+
+vi.mock("../services/goals.js", () => ({
+  goalService: () => goalSvc,
 }));
 
 vi.mock("../services/company-skills.js", () => ({
@@ -206,6 +218,14 @@ describe("company portability", () => {
     issueSvc.list.mockResolvedValue([]);
     issueSvc.getById.mockResolvedValue(null);
     issueSvc.getByIdentifier.mockResolvedValue(null);
+    goalSvc.list.mockResolvedValue([]);
+    goalSvc.update.mockImplementation(async (id: string, data: Record<string, unknown>) => ({
+      id,
+      companyId: "company-imported",
+      title: "updated",
+      ...data,
+    }));
+    syncGoalLinksMock.mockResolvedValue(undefined);
     routineSvc.list.mockResolvedValue([]);
     routineSvc.getDetail.mockImplementation(async (id: string) => {
       const rows = await routineSvc.list();
@@ -2227,5 +2247,300 @@ describe("company portability", () => {
     expect(nestedMaterializedFiles?.["AGENTS.md"]).toContain("You are ClaudeCoder.");
     expect(nestedMaterializedFiles?.["AGENTS.md"]).not.toMatch(/^---\n/);
     expect(nestedMaterializedFiles?.["AGENTS.md"]).not.toContain('name: "ClaudeCoder"');
+  });
+
+  it("imports GOALS.md with hierarchy, ownership, and project linkage", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Test Company",
+    });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.create.mockResolvedValue({
+      id: "agent-cto",
+      name: "CTO",
+    });
+    projectSvc.create.mockResolvedValue({
+      id: "project-mvp",
+      name: "MVP Backend",
+      urlKey: "mvp-backend",
+    });
+    projectSvc.listWorkspaces.mockResolvedValue([]);
+
+    let goalCounter = 0;
+    goalSvc.create.mockImplementation(async (_companyId: string, data: Record<string, unknown>) => {
+      goalCounter++;
+      return {
+        id: `goal-${goalCounter}`,
+        companyId: _companyId,
+        title: data.title,
+        level: data.level,
+        status: data.status,
+        parentId: data.parentId ?? null,
+        ownerAgentId: null,
+      };
+    });
+
+    const goalsYaml = [
+      "---",
+      "goals:",
+      "  - slug: launch-mvp",
+      "    title: Launch MVP product",
+      "    description: Ship core features",
+      "    level: company",
+      "    status: active",
+      "    ownerAgentSlug: cto",
+      "    projectSlugs: [mvp-backend]",
+      "    subgoals:",
+      "      - slug: build-auth",
+      "        title: Build authentication",
+      "        description: Implement login, registration, and session management",
+      "        level: team",
+      "        ownerAgentSlug: cto",
+      "  - slug: grow-users",
+      "    title: Acquire first 50 users",
+      "    level: company",
+      "    status: active",
+      "---",
+    ].join("\n");
+
+    const files: Record<string, string> = {
+      "COMPANY.md": [
+        "---",
+        'name: "Test Company"',
+        'schema: "agentcompanies/v1"',
+        "---",
+      ].join("\n"),
+      "GOALS.md": goalsYaml,
+      "agents/cto/AGENTS.md": [
+        "---",
+        'name: "CTO"',
+        "---",
+        "You are the CTO.",
+      ].join("\n"),
+      "projects/mvp-backend/PROJECT.md": [
+        "---",
+        'name: "MVP Backend"',
+        "---",
+      ].join("\n"),
+    };
+
+    const preview = await portability.previewImport({
+      source: { type: "inline", files },
+      include: { company: true, agents: true, projects: true, goals: true },
+      target: { mode: "new_company" },
+      agents: "all",
+      collisionStrategy: "rename",
+    });
+
+    expect(preview.errors).toEqual([]);
+    expect(preview.manifest.goals).toHaveLength(3);
+    expect(preview.manifest.goals[0]).toEqual(expect.objectContaining({
+      slug: "launch-mvp",
+      title: "Launch MVP product",
+      level: "company",
+      parentSlug: null,
+      projectSlugs: ["mvp-backend"],
+    }));
+    expect(preview.manifest.goals[1]).toEqual(expect.objectContaining({
+      slug: "build-auth",
+      title: "Build authentication",
+      level: "team",
+      parentSlug: "launch-mvp",
+    }));
+    expect(preview.plan.goalPlans).toHaveLength(3);
+    expect(preview.plan.goalPlans[0]).toEqual({
+      slug: "launch-mvp",
+      action: "create",
+      plannedTitle: "Launch MVP product",
+      reason: null,
+    });
+
+    const result = await portability.importBundle({
+      source: { type: "inline", files },
+      include: { company: true, agents: true, projects: true, goals: true },
+      target: { mode: "new_company" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    // Verify goals created with hierarchy
+    expect(goalSvc.create).toHaveBeenCalledTimes(3);
+    expect(goalSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      title: "Launch MVP product",
+      level: "company",
+      status: "active",
+      parentId: null,
+    }));
+    expect(goalSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      title: "Build authentication",
+      level: "team",
+      parentId: "goal-1", // parent is launch-mvp
+    }));
+
+    // Verify ownership resolved
+    expect(goalSvc.update).toHaveBeenCalledWith("goal-1", expect.objectContaining({
+      ownerAgentId: "agent-cto",
+    }));
+
+    // Verify project linkage
+    expect(syncGoalLinksMock).toHaveBeenCalledWith(
+      expect.anything(),
+      "project-mvp",
+      "company-imported",
+      ["goal-1"],
+    );
+
+    // Verify result includes goals
+    expect(result.goals).toHaveLength(3);
+    expect(result.goals[0]).toEqual(expect.objectContaining({
+      slug: "launch-mvp",
+      action: "created",
+    }));
+  });
+
+  it("falls back to COMPANY.md goals when GOALS.md is absent", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Test Company",
+    });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+
+    goalSvc.create.mockImplementation(async (_companyId: string, data: Record<string, unknown>) => ({
+      id: "goal-fallback",
+      companyId: _companyId,
+      title: data.title,
+      level: data.level,
+      status: data.status,
+    }));
+
+    const files: Record<string, string> = {
+      "COMPANY.md": [
+        "---",
+        'name: "Test Company"',
+        'schema: "agentcompanies/v1"',
+        "goals:",
+        "  - Launch MVP",
+        "  - Grow users",
+        "---",
+      ].join("\n"),
+    };
+
+    const result = await portability.importBundle({
+      source: { type: "inline", files },
+      include: { company: true, agents: false, projects: false },
+      target: { mode: "new_company" },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(goalSvc.create).toHaveBeenCalledTimes(2);
+    expect(goalSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      title: "Launch MVP",
+      level: "company",
+      status: "active",
+    }));
+    expect(result.goals).toHaveLength(2);
+  });
+
+  it("warns when GOALS.md overrides COMPANY.md goals", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    const files: Record<string, string> = {
+      "COMPANY.md": [
+        "---",
+        'name: "Test Company"',
+        'schema: "agentcompanies/v1"',
+        "goals:",
+        "  - Old goal from COMPANY.md",
+        "---",
+      ].join("\n"),
+      "GOALS.md": [
+        "---",
+        "goals:",
+        "  - slug: new-goal",
+        "    title: New goal from GOALS.md",
+        "---",
+      ].join("\n"),
+    };
+
+    const preview = await portability.previewImport({
+      source: { type: "inline", files },
+      include: { company: true, goals: true },
+      target: { mode: "new_company" },
+      collisionStrategy: "rename",
+    });
+
+    expect(preview.warnings).toContain(
+      "GOALS.md found — ignoring goals from COMPANY.md frontmatter in favor of GOALS.md.",
+    );
+    expect(preview.manifest.company?.goals).toEqual([]);
+    expect(preview.manifest.goals).toHaveLength(1);
+    expect(preview.manifest.goals[0]?.title).toBe("New goal from GOALS.md");
+  });
+
+  it("parses GOALS.md with goals in body (not frontmatter)", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    const files: Record<string, string> = {
+      "COMPANY.md": [
+        "---",
+        'name: "Test Company"',
+        'schema: "agentcompanies/v1"',
+        "---",
+      ].join("\n"),
+      "GOALS.md": [
+        "---",
+        "schema: agentcompanies/v1",
+        "---",
+        "",
+        "goals:",
+        "  - slug: launch-mvp",
+        "    title: Launch MVP product",
+        "    level: company",
+        "    status: active",
+        "    ownerAgentSlug: cto",
+        "    projectSlugs: [storefront]",
+        "    subgoals:",
+        "      - slug: build-frontend",
+        "        title: Build the frontend",
+        "        level: team",
+        "        ownerAgentSlug: frontend-eng",
+        "  - slug: grow-users",
+        "    title: Grow user base",
+        "    level: company",
+        "    status: active",
+      ].join("\n"),
+    };
+
+    const preview = await portability.previewImport({
+      source: { type: "inline", files },
+      include: { company: true, goals: true },
+      target: { mode: "new_company" },
+      collisionStrategy: "rename",
+    });
+
+    expect(preview.errors).toEqual([]);
+    expect(preview.manifest.goals).toHaveLength(3);
+    expect(preview.manifest.goals[0]).toEqual(expect.objectContaining({
+      slug: "launch-mvp",
+      title: "Launch MVP product",
+      parentSlug: null,
+      ownerAgentSlug: "cto",
+      projectSlugs: ["storefront"],
+    }));
+    expect(preview.manifest.goals[1]).toEqual(expect.objectContaining({
+      slug: "build-frontend",
+      title: "Build the frontend",
+      parentSlug: "launch-mvp",
+      ownerAgentSlug: "frontend-eng",
+    }));
+    expect(preview.manifest.goals[2]).toEqual(expect.objectContaining({
+      slug: "grow-users",
+      title: "Grow user base",
+      parentSlug: null,
+    }));
   });
 });

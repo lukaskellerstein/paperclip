@@ -269,7 +269,7 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
 }
 
 /** Sync the project_goals join table for a single project. */
-async function syncGoalLinks(db: Db, projectId: string, companyId: string, goalIds: string[]) {
+export async function syncGoalLinks(db: Db, projectId: string, companyId: string, goalIds: string[]) {
   // Delete existing links
   await db.delete(projectGoals).where(eq(projectGoals.projectId, projectId));
 

@@ -4,6 +4,7 @@ export interface CompanyPortabilityInclude {
   projects: boolean;
   issues: boolean;
   skills: boolean;
+  goals: boolean;
 }
 
 export interface CompanyPortabilityEnvInput {
@@ -28,6 +29,7 @@ export interface CompanyPortabilityCompanyManifestEntry {
   path: string;
   name: string;
   description: string | null;
+  goals: string[];
   brandColor: string | null;
   logoPath: string | null;
   requireBoardApprovalForNewAgents: boolean;
@@ -161,6 +163,7 @@ export interface CompanyPortabilityManifest {
   skills: CompanyPortabilitySkillManifestEntry[];
   projects: CompanyPortabilityProjectManifestEntry[];
   issues: CompanyPortabilityIssueManifestEntry[];
+  goals: CompanyPortabilityGoalManifestEntry[];
   envInputs: CompanyPortabilityEnvInput[];
 }
 
@@ -174,7 +177,7 @@ export interface CompanyPortabilityExportResult {
 
 export interface CompanyPortabilityExportPreviewFile {
   path: string;
-  kind: "company" | "agent" | "skill" | "project" | "issue" | "extension" | "readme" | "other";
+  kind: "company" | "agent" | "skill" | "project" | "issue" | "goal" | "extension" | "readme" | "other";
 }
 
 export interface CompanyPortabilityExportPreviewResult {
@@ -188,6 +191,7 @@ export interface CompanyPortabilityExportPreviewResult {
     skills: number;
     projects: number;
     issues: number;
+    goals: number;
   };
   warnings: string[];
   paperclipExtensionPath: string;
@@ -251,6 +255,24 @@ export interface CompanyPortabilityPreviewIssuePlan {
   reason: string | null;
 }
 
+export interface CompanyPortabilityGoalManifestEntry {
+  slug: string;
+  title: string;
+  description: string | null;
+  level: string;
+  status: string;
+  ownerAgentSlug: string | null;
+  parentSlug: string | null;
+  projectSlugs: string[];
+}
+
+export interface CompanyPortabilityPreviewGoalPlan {
+  slug: string;
+  action: "create" | "skip";
+  plannedTitle: string;
+  reason: string | null;
+}
+
 export interface CompanyPortabilityPreviewResult {
   include: CompanyPortabilityInclude;
   targetCompanyId: string | null;
@@ -262,6 +284,7 @@ export interface CompanyPortabilityPreviewResult {
     agentPlans: CompanyPortabilityPreviewAgentPlan[];
     projectPlans: CompanyPortabilityPreviewProjectPlan[];
     issuePlans: CompanyPortabilityPreviewIssuePlan[];
+    goalPlans: CompanyPortabilityPreviewGoalPlan[];
   };
   manifest: CompanyPortabilityManifest;
   files: Record<string, CompanyPortabilityFileEntry>;
@@ -297,6 +320,13 @@ export interface CompanyPortabilityImportResult {
     id: string | null;
     action: "created" | "updated" | "skipped";
     name: string;
+    reason: string | null;
+  }[];
+  goals: {
+    slug: string;
+    id: string | null;
+    action: "created" | "skipped";
+    title: string;
     reason: string | null;
   }[];
   envInputs: CompanyPortabilityEnvInput[];
