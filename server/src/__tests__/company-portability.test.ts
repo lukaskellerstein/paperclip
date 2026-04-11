@@ -1290,7 +1290,7 @@ describe("company portability", () => {
       },
     });
 
-    expect(asTextFile(exported.files["tasks/monday-review/TASK.md"])).toContain('recurring: true');
+    expect(asTextFile(exported.files["tasks/01-monday-review/TASK.md"])).toContain('recurring: true');
     const extension = asTextFile(exported.files[".paperclip.yaml"]);
     expect(extension).toContain("routines:");
     expect(extension).toContain("monday-review:");
@@ -2474,7 +2474,7 @@ describe("company portability", () => {
     });
 
     expect(preview.warnings).toContain(
-      "GOALS.md found — ignoring goals from COMPANY.md frontmatter in favor of GOALS.md.",
+      "Rich goals found — ignoring simple goals from COMPANY.md frontmatter in favor of goal hierarchy.",
     );
     expect(preview.manifest.company?.goals).toEqual([]);
     expect(preview.manifest.goals).toHaveLength(1);

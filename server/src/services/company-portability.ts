@@ -138,6 +138,7 @@ function classifyPortableFileKind(pathValue: string): CompanyPortabilityExportPr
   const normalized = normalizePortablePath(pathValue);
   if (normalized === "COMPANY.md") return "company";
   if (normalized === "GOALS.md") return "goal";
+  if (normalized.startsWith("goals/") && normalized.endsWith("/GOAL.md")) return "goal";
   if (normalized === ".paperclip.yaml" || normalized === ".paperclip.yml") return "extension";
   if (normalized === "README.md") return "readme";
   if (normalized.startsWith("agents/")) return "agent";
@@ -2003,11 +2004,24 @@ function parseYamlScalar(rawValue: string): unknown {
   if (trimmed === "[]") return [];
   if (trimmed === "{}") return {};
   if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
-  if (
-    trimmed.startsWith("\"") ||
-    trimmed.startsWith("[") ||
-    trimmed.startsWith("{")
-  ) {
+  if (trimmed.startsWith("\"")) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return trimmed;
+    }
+  }
+  // YAML flow sequences: [foo, bar] — items may not be JSON-quoted
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      const inner = trimmed.slice(1, -1).trim();
+      if (!inner) return [];
+      return inner.split(",").map((item) => parseYamlScalar(item.trim()));
+    }
+  }
+  if (trimmed.startsWith("{")) {
     try {
       return JSON.parse(trimmed);
     } catch {
@@ -2132,9 +2146,14 @@ function parseFrontmatterMarkdown(raw: string): MarkdownDoc {
   if (!normalized.startsWith("---\n")) {
     return { frontmatter: {}, body: normalized.trim() };
   }
-  const closing = normalized.indexOf("\n---\n", 4);
+  let closing = normalized.indexOf("\n---\n", 4);
   if (closing < 0) {
-    return { frontmatter: {}, body: normalized.trim() };
+    // Handle files that end exactly with "\n---" (no trailing newline)
+    if (normalized.endsWith("\n---")) {
+      closing = normalized.length - 4;
+    } else {
+      return { frontmatter: {}, body: normalized.trim() };
+    }
   }
   const frontmatterRaw = normalized.slice(4, closing).trim();
   const body = normalized.slice(closing + 5).trim();
@@ -2270,6 +2289,52 @@ function readGoalsManifest(frontmatter: Record<string, unknown>): CompanyPortabi
   return flattenGoalTree(raw, null, 0);
 }
 
+/**
+ * Parse individual GOAL.md files from the goals/ folder structure.
+ * Hierarchy is derived from folder nesting:
+ *   goals/{slug}/GOAL.md              → top-level goal (parentSlug = null)
+ *   goals/{slug}/{subslug}/GOAL.md    → subgoal (parentSlug = slug)
+ */
+function readGoalFolderEntries(
+  goalPaths: string[],
+  normalizedFiles: Record<string, CompanyPortabilityFileEntry>,
+): CompanyPortabilityGoalManifestEntry[] {
+  const result: CompanyPortabilityGoalManifestEntry[] = [];
+
+  for (const goalPath of goalPaths) {
+    const markdownRaw = readPortableTextFile(normalizedFiles, goalPath);
+    if (typeof markdownRaw !== "string") continue;
+
+    const doc = parseFrontmatterMarkdown(markdownRaw);
+    const fm = doc.frontmatter as Record<string, unknown>;
+
+    // Derive slug and parentSlug from the path
+    // e.g. "goals/launch-mvp/GOAL.md" → slug="launch-mvp", parentSlug=null
+    // e.g. "goals/launch-mvp/build-frontend/GOAL.md" → slug="build-frontend", parentSlug="launch-mvp"
+    const normalized = normalizePortablePath(goalPath);
+    const segments = normalized.replace(/^goals\//, "").replace(/\/GOAL\.md$/, "").split("/");
+    const slug = segments[segments.length - 1];
+    const parentSlug = segments.length > 1 ? segments[segments.length - 2] : null;
+    const depth = segments.length - 1; // 0-based depth for level assignment
+
+    const title = asString(fm.title);
+    if (!slug || !title) continue;
+
+    const level = asString(fm.level)
+      ?? DEFAULT_GOAL_LEVELS_BY_DEPTH[Math.min(depth, DEFAULT_GOAL_LEVELS_BY_DEPTH.length - 1)];
+    const status = asString(fm.status) ?? "active";
+    const description = doc.body.trim() || asString(fm.description) || null;
+    const ownerAgentSlug = asString(fm.ownerAgentSlug) ?? null;
+    const projectSlugs = Array.isArray(fm.projectSlugs)
+      ? fm.projectSlugs.filter((s): s is string => typeof s === "string")
+      : [];
+
+    result.push({ slug, title, description, level, status, ownerAgentSlug, parentSlug, projectSlugs });
+  }
+
+  return result;
+}
+
 function readIncludeEntries(frontmatter: Record<string, unknown>): CompanyPackageIncludeEntry[] {
   const includes = frontmatter.includes;
   if (!Array.isArray(includes)) return [];
@@ -2387,6 +2452,10 @@ function buildManifestFromPackageFiles(
   const discoveredGoalsPaths = Object.keys(normalizedFiles).filter(
     (entry) => entry.endsWith("/GOALS.md") || entry === "GOALS.md",
   );
+  const discoveredGoalFolderPaths = Object.keys(normalizedFiles).filter((entry) => {
+    const norm = normalizePortablePath(entry);
+    return norm.startsWith("goals/") && norm.endsWith("/GOAL.md");
+  }).sort();
   const agentPaths = Array.from(new Set([...referencedAgentPaths, ...discoveredAgentPaths])).sort();
   const projectPaths = Array.from(new Set([...referencedProjectPaths, ...discoveredProjectPaths])).sort();
   const taskPaths = Array.from(new Set([...referencedTaskPaths, ...discoveredTaskPaths])).sort();
@@ -2402,7 +2471,7 @@ function buildManifestFromPackageFiles(
       projects: projectPaths.length > 0,
       issues: taskPaths.length > 0,
       skills: skillPaths.length > 0,
-      goals: discoveredGoalsPaths.length > 0,
+      goals: discoveredGoalsPaths.length > 0 || discoveredGoalFolderPaths.length > 0,
     },
     company: {
       path: resolvedCompanyPath,
@@ -2624,7 +2693,9 @@ function buildManifestFromPackageFiles(
     }
     const taskDoc = parseFrontmatterMarkdown(markdownRaw);
     const frontmatter = taskDoc.frontmatter;
-    const fallbackSlug = normalizeAgentUrlKey(path.posix.basename(path.posix.dirname(taskPath))) ?? "task";
+    const rawDirName = path.posix.basename(path.posix.dirname(taskPath));
+    const strippedDirName = rawDirName.replace(/^\d+-/, "");
+    const fallbackSlug = normalizeAgentUrlKey(strippedDirName) ?? normalizeAgentUrlKey(rawDirName) ?? "task";
     const slug = asString(frontmatter.slug) ?? fallbackSlug;
     const extension = isPlainRecord(paperclipTasks[slug]) ? paperclipTasks[slug] : {};
     const routineExtension = normalizeRoutineExtension(paperclipRoutines[slug]);
@@ -2670,24 +2741,33 @@ function buildManifestFromPackageFiles(
     }
   }
 
-  for (const goalsPath of discoveredGoalsPaths) {
-    const markdownRaw = readPortableTextFile(normalizedFiles, goalsPath);
-    if (typeof markdownRaw !== "string") {
-      warnings.push(`Referenced goals file is missing from package: ${goalsPath}`);
-      continue;
+  // Prefer goals/ folder structure over GOALS.md when both exist
+  if (discoveredGoalFolderPaths.length > 0) {
+    const folderGoals = readGoalFolderEntries(discoveredGoalFolderPaths, normalizedFiles);
+    manifest.goals.push(...folderGoals);
+    if (discoveredGoalsPaths.length > 0) {
+      warnings.push("Both goals/ folder and GOALS.md found — using goals/ folder structure, ignoring GOALS.md.");
     }
-    const goalsDoc = parseFrontmatterMarkdown(markdownRaw);
-    let goalEntries = readGoalsManifest(goalsDoc.frontmatter);
-    // If goals not in frontmatter, try parsing the body as YAML
-    if (goalEntries.length === 0 && goalsDoc.body.trim()) {
-      const bodyParsed = parseYamlFrontmatter(goalsDoc.body);
-      goalEntries = readGoalsManifest(bodyParsed);
+  } else {
+    for (const goalsPath of discoveredGoalsPaths) {
+      const markdownRaw = readPortableTextFile(normalizedFiles, goalsPath);
+      if (typeof markdownRaw !== "string") {
+        warnings.push(`Referenced goals file is missing from package: ${goalsPath}`);
+        continue;
+      }
+      const goalsDoc = parseFrontmatterMarkdown(markdownRaw);
+      let goalEntries = readGoalsManifest(goalsDoc.frontmatter);
+      // If goals not in frontmatter, try parsing the body as YAML
+      if (goalEntries.length === 0 && goalsDoc.body.trim()) {
+        const bodyParsed = parseYamlFrontmatter(goalsDoc.body);
+        goalEntries = readGoalsManifest(bodyParsed);
+      }
+      manifest.goals.push(...goalEntries);
     }
-    manifest.goals.push(...goalEntries);
   }
 
   if (manifest.goals.length > 0 && manifest.company && manifest.company.goals.length > 0) {
-    warnings.push("GOALS.md found — ignoring goals from COMPANY.md frontmatter in favor of GOALS.md.");
+    warnings.push("Rich goals found — ignoring simple goals from COMPANY.md frontmatter in favor of goal hierarchy.");
     manifest.company.goals = [];
   }
 
@@ -3144,24 +3224,23 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         }
       }
 
-      function goalNodeToFrontmatter(node: GoalTreeNode): Record<string, unknown> {
-        const entry: Record<string, unknown> = {
-          slug: node.slug,
-          title: node.title,
-        };
-        if (node.description) entry.description = node.description;
-        entry.level = node.level;
-        entry.status = node.status;
-        if (node.ownerAgentSlug) entry.ownerAgentSlug = node.ownerAgentSlug;
-        if (node.projectSlugs.length > 0) entry.projectSlugs = node.projectSlugs;
-        if (node.subgoals.length > 0) {
-          entry.subgoals = node.subgoals.map(goalNodeToFrontmatter);
-        }
-        return entry;
-      }
-
       if (rootNodes.length > 0) {
-        files["GOALS.md"] = buildMarkdown({ goals: rootNodes.map(goalNodeToFrontmatter) }, "");
+        // Export as goals/ folder structure (one GOAL.md per goal, subgoals as subfolders)
+        function writeGoalFolder(node: GoalTreeNode, parentPath: string) {
+          const goalDir = `${parentPath}${node.slug}`;
+          const fm: Record<string, unknown> = { title: node.title };
+          fm.level = node.level;
+          fm.status = node.status;
+          if (node.ownerAgentSlug) fm.ownerAgentSlug = node.ownerAgentSlug;
+          if (node.projectSlugs.length > 0) fm.projectSlugs = node.projectSlugs;
+          files[`${goalDir}/GOAL.md`] = buildMarkdown(fm, node.description ?? "");
+          for (const child of node.subgoals) {
+            writeGoalFolder(child, `${goalDir}/`);
+          }
+        }
+        for (const rootNode of rootNodes) {
+          writeGoalFolder(rootNode, "goals/");
+        }
       }
     }
 
@@ -3348,11 +3427,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       paperclipProjectsOut[slug] = isPlainRecord(extension) ? extension : {};
     }
 
+    let globalTaskIndex = 1;
     for (const issue of selectedIssueRows) {
       const taskSlug = taskSlugByIssueId.get(issue.id)!;
       const projectSlug = issue.projectId ? (projectSlugById.get(issue.projectId) ?? null) : null;
       // All tasks go in top-level tasks/ folder, never nested under projects/
-      const taskPath = `tasks/${taskSlug}/TASK.md`;
+      const prefix = String(globalTaskIndex).padStart(2, "0");
+      globalTaskIndex += 1;
+      const taskPath = `tasks/${prefix}-${taskSlug}/TASK.md`;
       const assigneeSlug = issue.assigneeAgentId ? (idToSlug.get(issue.assigneeAgentId) ?? null) : null;
       const projectWorkspaceKey = issue.projectId && issue.projectWorkspaceId
         ? projectWorkspaceKeyByProjectId.get(issue.projectId)?.get(issue.projectWorkspaceId) ?? null
@@ -3399,7 +3481,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     for (const routine of selectedRoutineRows) {
       const taskSlug = taskSlugByRoutineId.get(routine.id)!;
       const projectSlug = projectSlugById.get(routine.projectId) ?? null;
-      const taskPath = `tasks/${taskSlug}/TASK.md`;
+      const prefix = String(globalTaskIndex).padStart(2, "0");
+      globalTaskIndex += 1;
+      const taskPath = `tasks/${prefix}-${taskSlug}/TASK.md`;
       const assigneeSlug = idToSlug.get(routine.assigneeAgentId) ?? null;
       files[taskPath] = buildMarkdown(
         {

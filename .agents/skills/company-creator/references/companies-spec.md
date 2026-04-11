@@ -75,6 +75,8 @@ schema: agentcompanies/v1
 
 Optional: `version`, `license`, `authors`, `goals`, `includes`, `requirements.secrets`
 
+Simple goals go in COMPANY.md frontmatter as strings. For rich goals with hierarchy, ownership, and project linkage, use the `goals/` folder structure (see `goals/{slug}/GOAL.md` with subgoals as subfolders).
+
 ## AGENTS.md Key Fields
 
 ```yaml
@@ -115,15 +117,34 @@ owner: agent-slug
 name: Task Name
 assignee: agent-slug
 project: project-slug
-schedule:
-  timezone: America/Chicago
-  startsAt: 2026-03-16T09:00:00-05:00
-  recurrence:
-    frequency: weekly
-    interval: 1
-    weekdays: [monday]
-    time: { hour: 9, minute: 0 }
+priority: high
+recurring: true
 ```
+
+- **`priority`** — valid values: `critical`, `high`, `medium`, `low`. Choose the priority that reflects the actual importance of the task — not every task is medium. Infrastructure setup and blocking work should be `high` or `critical`; nice-to-haves and research tasks should be `low`. Defaults to `medium` if omitted.
+- **Recurring tasks must live inside a project** (`projects/{slug}/tasks/`), never at company level (`tasks/`). They become Routines, which require a project and assignee.
+- Prefer `recurring: true` over the legacy `schedule.recurrence` block for new exports
+- Vendors attach actual schedule/trigger details in their extension (e.g. `.paperclip.yaml`)
+
+## Task Ordering
+
+Tasks are imported in alphabetical order by directory name. To control import order, prefix directory names with a two-digit number.
+
+**Numbering must be globally unique across the entire company package.** Do not restart numbering per project — continue the sequence across all task locations:
+
+```text
+projects/backend/tasks/
+├── 01-setup-infrastructure/TASK.md
+├── 02-build-auth/TASK.md
+projects/frontend/tasks/
+├── 03-design-ui/TASK.md
+├── 04-build-components/TASK.md
+tasks/
+├── 05-strategic-review/TASK.md
+├── 06-competitive-research/TASK.md
+```
+
+Without numeric prefixes, tasks sort alphabetically by slug.
 
 ## Source References (for external skills/content)
 

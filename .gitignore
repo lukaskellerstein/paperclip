@@ -50,11 +50,15 @@ tests/e2e/playwright-report/
 tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
-.claude/worktrees/
+.playwright-mcp
 
-# My
-paperclip-plugin/
+
+# My - Claude
+claude-paperclip-plugin/
 .company
 START.md
 company.md
 .claude/settings.json
+.claude/worktrees/
+
+# My - Codex

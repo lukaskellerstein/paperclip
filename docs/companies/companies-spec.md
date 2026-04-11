@@ -66,6 +66,8 @@ projects/<slug>/PROJECT.md
 projects/<slug>/tasks/<slug>/TASK.md
 tasks/<slug>/TASK.md
 skills/<slug>/SKILL.md
+goals/<slug>/GOAL.md
+goals/<slug>/<subgoal-slug>/GOAL.md
 .paperclip.yaml
 
 HEARTBEAT.md
@@ -136,6 +138,7 @@ authors:
   - name: Example Org
 goals:
   - Build and ship software products
+  - Maintain high code quality
 includes:
   - https://github.com/example/shared-company-parts/blob/0123456789abcdef0123456789abcdef01234567/teams/engineering/TEAM.md
 requirements:
@@ -253,6 +256,7 @@ owner: cto
 name: Monday Review
 assignee: ceo
 project: q2-launch
+priority: high
 recurring: true
 ```
 
@@ -261,13 +265,43 @@ recurring: true
 - body content is the canonical markdown task description
 - `assignee` should reference an agent slug inside the package
 - `project` should reference a project slug when the task belongs to a `PROJECT.md`
+- `priority` sets the task importance. Valid values: `critical`, `high`, `medium`, `low`. Choose the priority that reflects the actual importance of the task — not every task is medium. Infrastructure setup and blocking work should be `high` or `critical`; nice-to-haves and research tasks should be `low`. Defaults to `medium` if omitted.
 - `recurring: true` marks the task as ongoing recurring work instead of a one-time starter task
-- tasks are intentionally basic seed work: title, markdown body, assignee, project linkage, and optional `recurring: true`
-- tools may also support optional fields like `priority`, `labels`, or `metadata`, but they should not require them in the base package
+- **recurring tasks MUST live inside a project** (`projects/{slug}/tasks/`), never at the company level (`tasks/`). Importers treat them as Routines, which require an owning agent and project. The `project` and `assignee` fields are both required.
+- tasks are intentionally basic seed work: title, markdown body, assignee, project linkage, priority, and optional `recurring: true`
+- tools may also support optional fields like `labels` or `metadata`, but they should not require them in the base package
+
+### Task Ordering
+
+Tasks are imported in **alphabetical order by directory name** (lexicographic path sort). IDs are assigned sequentially in that order. To control the import order, prefix task directory names with a two-digit number:
+
+```text
+tasks/
+├── 01-setup-infrastructure/TASK.md   → imported first
+├── 02-build-auth/TASK.md             → imported second
+├── 03-write-tests/TASK.md            → imported third
+```
+
+**Numbering must be globally unique across the entire company package**, including tasks nested under different projects and top-level tasks. Continue the sequence across all task locations:
+
+```text
+projects/backend/tasks/
+├── 01-setup-infrastructure/TASK.md
+├── 02-build-auth/TASK.md
+projects/frontend/tasks/
+├── 03-design-ui/TASK.md
+├── 04-build-components/TASK.md
+tasks/
+├── 05-strategic-review/TASK.md
+├── 06-competitive-research/TASK.md
+```
+
+If no numeric prefix is used, tasks will sort alphabetically by slug, which may not reflect the intended execution order.
 
 ### Recurring Tasks
 
 - the base package only needs to say whether a task is recurring
+- recurring tasks MUST live inside a project directory (`projects/{slug}/tasks/`), never at the company level (`tasks/`). Importers create Routines from recurring tasks, and Routines require both an owning agent (`assignee`) and a project. If no existing project fits, create a dedicated project (e.g. `operations`, `company-rituals`).
 - vendors may attach the actual schedule / trigger / runtime fidelity in a vendor extension such as `.paperclip.yaml`
 - this keeps `TASK.md` portable while still allowing richer runtime systems to round-trip their own automation details
 - legacy packages may still use `schedule.recurrence` during transition, but exporters should prefer `recurring: true`
@@ -285,6 +319,53 @@ routines:
 
 - vendors should ignore unknown recurring-task extensions they do not understand
 - vendors importing legacy `schedule.recurrence` data may translate it into their own runtime trigger model, but new exports should prefer the simpler `recurring: true` base field
+
+## 10b. GOAL.md
+
+`GOAL.md` defines a company goal. Goals live in the `goals/` directory with subgoals as nested subfolders.
+
+### Directory structure
+
+```text
+goals/
+├── launch-mvp/
+│   ├── GOAL.md
+│   ├── build-auth/
+│   │   └── GOAL.md
+│   └── build-onboarding/
+│       └── GOAL.md
+└── acquire-customers/
+    └── GOAL.md
+```
+
+### Example
+
+```yaml
+---
+title: Launch MVP product with core features
+level: company
+status: active
+ownerAgentSlug: cto
+projectSlugs: [mvp-backend, mvp-frontend]
+---
+```
+
+Body contains the goal description.
+
+### Fields
+
+- `title` — required
+- `level` — one of: `company`, `team`, `agent`, `task`. Optional, auto-assigned by folder depth
+- `status` — one of: `planned`, `active`, `achieved`, `cancelled`. Optional, defaults to `active`
+- `ownerAgentSlug` — optional, references an agent slug
+- `projectSlugs` — optional, references project slugs
+- slug is derived from the folder name (not duplicated in frontmatter)
+- subgoals are subfolders containing their own `GOAL.md`
+- maximum 4 levels of nesting
+
+### Relationship to COMPANY.md goals
+
+When `goals/` is present, it provides the rich goal hierarchy. The simple `goals: string[]` in COMPANY.md should still be maintained for backward compatibility with tools that only read COMPANY.md frontmatter.
 
 ## 11. SKILL.md Compatibility
 
@@ -306,9 +387,6 @@ In other words, this spec extends Agent Skills upward into company/team/agent co
 ---
 name: review
 description: Paranoid code review skill
-allowed-tools:
-  - Read
-  - Grep
 metadata:
   paperclip:
     tags:
@@ -571,12 +649,14 @@ lean-dev-shop/
 │   └── q2-launch/
 │       ├── PROJECT.md
 │       └── tasks/
-│           └── monday-review/
+│           ├── 01-kickoff/TASK.md
+│           └── 02-monday-review/
 │               └── TASK.md
 ├── teams/
 │   └── engineering/TEAM.md
 ├── tasks/
-│   └── weekly-review/TASK.md
+│   ├── 03-onboarding/TASK.md
+│   └── 04-weekly-review/TASK.md
 └── skills/
     └── review/SKILL.md
 

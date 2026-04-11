@@ -117,17 +117,32 @@ Create the directory structure and all files. Follow the spec's conventions exac
 ├── teams/
 │   └── <slug>/TEAM.md        (if teams are needed)
 ├── projects/
-│   └── <slug>/PROJECT.md     (if projects are needed)
+│   └── <slug>/
+│       ├── PROJECT.md
+│       └── tasks/
+│           └── NN-<slug>/TASK.md   (if project tasks are needed)
 ├── tasks/
-│   └── <slug>/TASK.md        (if tasks are needed)
+│   └── NN-<slug>/TASK.md        (if top-level tasks are needed; NN continues globally)
 ├── skills/
 │   └── <slug>/SKILL.md       (if custom skills are needed)
 └── .paperclip.yaml            (Paperclip vendor extension)
 ```
 
+**Generation uses two waves of parallel agents:**
+
+**Wave 1** — Spawn one **agent-creator** agent (`paperclip-plugin:agent-creator`) per paperclip agent, all in parallel. Each writes AGENTS.md body, SOUL.md, HEARTBEAT.md, TOOLS.md for its agent. While they run, write COMPANY.md, projects, tasks, .paperclip.yaml, README, LICENSE yourself.
+
+> **CRITICAL — recurring tasks:** Every task with `recurring: true` MUST be placed inside a project directory (`projects/{slug}/tasks/`), NEVER at the company level (`tasks/`). Recurring tasks become Routines, which require a project. If no project fits, create one (e.g. `operations`).
+
+**Wave 2** (after Wave 1 completes) — Spawn per-agent workers in parallel:
+- **skill-creator** agent (`paperclip-plugin:skill-creator`) — one per agent that has custom skills
+- **subagent-creator** agent (`paperclip-plugin:subagent-creator`) — one per agent that has subagents in `runtime/agents/`
+
 **Rules:**
 
 - Slugs must be URL-safe, lowercase, hyphenated
+- **Task directory names must use globally unique two-digit numeric prefixes** (e.g. `01-setup`, `02-build`). Do NOT restart numbering per project — continue the sequence across all task locations (project tasks and top-level tasks). If project A has tasks 01-05, project B starts at 06, and top-level tasks continue from there.
+- **Recurring tasks MUST live inside a project** (`projects/{slug}/tasks/`), never at the company level (`tasks/`). Recurring tasks become Routines, which require a project and an assignee. If no existing project fits, create a dedicated project (e.g. `operations`).
 - COMPANY.md gets `schema: agentcompanies/v1` - other files inherit it
 - Agent instructions go in the AGENTS.md body, not in .paperclip.yaml
 - Skills referenced by shortname in AGENTS.md resolve to `skills/<shortname>/SKILL.md`
